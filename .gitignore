@@ -1,0 +1,8 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+build/
+*_override.tf
+CLAUDE.md
+.claude/settings.local.json
