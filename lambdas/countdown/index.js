@@ -1,7 +1,8 @@
 exports.handler = async (event) => {
     const now = new Date();
-    const nextYear = now.getFullYear() + 1;
-    const newYearDate = new Date(`January 1, ${nextYear} 00:00:00 GMT`);
+    // Año en UTC: con getFullYear() (hora local) fuera de AWS el 1 de enero daba valores negativos
+    const nextYear = now.getUTCFullYear() + 1;
+    const newYearDate = new Date(Date.UTC(nextYear, 0, 1)); // 1 de enero 00:00 UTC
     
     // Calcular la diferencia en milisegundos
     const diffMs = newYearDate - now;

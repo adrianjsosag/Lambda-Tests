@@ -6,3 +6,5 @@ build/
 *_override.tf
 CLAUDE.md
 .claude/settings.local.json
+*.zip
+tfplan

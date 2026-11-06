@@ -1,8 +1,21 @@
 # Módulo `iam`
 
-Crea el **rol de ejecución** que asume la función Lambda. Solo concede permiso para escribir logs en CloudWatch.
+Crea el **rol de ejecución** que asume una función Lambda. Solo concede permiso para escribir logs en CloudWatch. El entorno lo instancia con `for_each`: **cada función tiene su propio rol**, así los permisos extra de una no afectan a las demás.
 
 ← [Volver a la documentación general](../../README.md)
+
+## Estructura de directorios
+
+```
+terraform/modules/iam/
+├── main.tf        # data.aws_iam_policy_document.assume_role, aws_iam_role.lambda,
+│                  # aws_iam_role_policy_attachment.basic_execution
+├── variables.tf   # role_name
+├── outputs.tf     # role_arn, role_name
+└── README.md      # este documento
+```
+
+Lo llama `module "iam"` (con `for_each = var.lambdas`) en [`environments/dev/main.tf`](../../environments/dev/main.tf).
 
 ## Diagrama
 
@@ -51,9 +64,10 @@ flowchart LR
 
 ```hcl
 module "iam" {
-  source = "../../modules/iam"
+  source   = "../../modules/iam"
+  for_each = var.lambdas
 
-  role_name = "${local.function_name}-role"   # lambda-tests-dev-countdown-role
+  role_name = "${local.function_names[each.key]}-role"   # lambda-tests-dev-countdown-role
 }
 ```
 
@@ -63,7 +77,7 @@ module "iam" {
 
   ```hcl
   resource "aws_iam_role_policy" "extra" {
-    role   = module.iam.role_name
+    role   = module.iam["lambda-example"].role_name   # rol de una función concreta
     policy = data.aws_iam_policy_document.extra.json
   }
   ```
@@ -81,5 +95,5 @@ module "iam" {
 | Síntoma | Solución |
 |---|---|
 | `The role defined for the function cannot be assumed by Lambda` al crear la función | IAM tarda unos segundos en propagar el rol nuevo. Repite `terraform apply`. |
-| `EntityAlreadyExists` | Ya existe un rol con ese nombre (de un despliegue anterior). Impórtalo con `terraform import module.iam.aws_iam_role.lambda <nombre>` o bórralo. |
+| `EntityAlreadyExists` | Ya existe un rol con ese nombre (de un despliegue anterior). Impórtalo con `terraform import 'module.iam["countdown"].aws_iam_role.lambda' <nombre>` o bórralo. |
 | `AccessDenied` en `iam:CreateRole` | La identidad que despliega no tiene permisos de IAM. |

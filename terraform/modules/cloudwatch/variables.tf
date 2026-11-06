@@ -1,6 +1,6 @@
-variable "function_name" {
-  description = "Nombre de la función Lambda (define el nombre de su log group)"
-  type        = string
+variable "function_names" {
+  description = "Mapa clave => nombre de la función Lambda (define el nombre de cada log group)"
+  type        = map(string)
 }
 
 variable "api_name" {

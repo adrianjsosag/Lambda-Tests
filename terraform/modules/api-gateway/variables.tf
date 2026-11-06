@@ -3,19 +3,18 @@ variable "api_name" {
   type        = string
 }
 
-variable "lambda_invoke_arn" {
-  description = "Invoke ARN de la Lambda a integrar"
-  type        = string
-}
+variable "routes" {
+  description = "Rutas a publicar: clave => { route_key, lambda_invoke_arn, lambda_function_name }. Una integración, ruta y permiso por clave."
+  type = map(object({
+    route_key            = string # p. ej. "GET /countdown"
+    lambda_invoke_arn    = string
+    lambda_function_name = string
+  }))
 
-variable "lambda_function_name" {
-  description = "Nombre de la Lambda (para el permiso de invocación)"
-  type        = string
-}
-
-variable "route_key" {
-  description = "Ruta expuesta, p. ej. \"GET /countdown\""
-  type        = string
+  validation {
+    condition     = length(distinct([for r in values(var.routes) : r.route_key])) == length(var.routes)
+    error_message = "Los route_key no se pueden repetir."
+  }
 }
 
 variable "log_group_arn" {

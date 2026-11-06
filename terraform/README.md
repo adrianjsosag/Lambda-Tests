@@ -1,6 +1,25 @@
-# Infraestructura Terraform: Lambda "countdown" + API Gateway
+# Infraestructura Terraform: funciones Lambda + API Gateway
 
-Despliega la función [`lambda/index.js`](../lambda/index.js) en AWS Lambda y la publica por HTTPS en `GET /countdown` mediante un API Gateway HTTP API. La función devuelve en JSON el tiempo que falta para Año Nuevo.
+Despliega cada función de [`lambdas/<nombre>/`](../lambdas) en AWS Lambda y la publica por HTTPS en su propia ruta de **un único API Gateway HTTP API** compartido. Qué funciones se despliegan, y con qué ruta y configuración, se declara en el mapa `lambdas` de [`environments/dev/terraform.tfvars`](environments/dev/terraform.tfvars):
+
+```hcl
+lambdas = {
+  countdown = {
+    route_key = "GET /countdown"
+  }
+
+  birthday = {
+    route_key = "GET /birthday"
+  }
+}
+```
+
+| Función | Ruta | Descripción |
+|---|---|---|
+| [`countdown`](../lambdas/countdown/README.md) | `GET /countdown` | Tiempo que falta para Año Nuevo |
+| [`birthday`](../lambdas/birthday/README.md) | `GET /birthday` | Tiempo que falta para el próximo 5 de enero |
+
+Para añadir funciones, sigue la guía [Cómo añadir una nueva función Lambda](../README.md#cómo-añadir-una-nueva-función-lambda) del README raíz.
 
 > **Entorno de trabajo:** todos los comandos de este documento se ejecutan en la **consola Linux Ubuntu de WSL**, dentro de `~/Lambda-Tests`. No uses PowerShell ni CMD, ni abras el proyecto por la ruta `\\wsl.localhost\...` para ejecutar Terraform (ver [Problemas frecuentes](#problemas-frecuentes)).
 
@@ -26,28 +45,50 @@ flowchart LR
     client(["Cliente<br/>curl / navegador"])
 
     subgraph aws["Cuenta AWS (eu-west-1)"]
-        subgraph apigw["API Gateway HTTP API<br/>lambda-tests-dev-api"]
-            route["Ruta<br/>GET /countdown"]
+        subgraph apigw["API Gateway HTTP API (compartido)<br/>lambda-tests-dev-api"]
             stage["Stage $default<br/>auto_deploy + throttling"]
+            route1["Ruta<br/>GET /countdown"]
+            route2["Ruta<br/>GET /birthday"]
+            routeN["Ruta<br/>GET /&lt;nombre&gt;"]
         end
 
-        lambda["Lambda<br/>lambda-tests-dev-countdown<br/>nodejs22.x"]
-        role["Rol IAM<br/>lambda-tests-dev-countdown-role"]
-
-        subgraph logs["CloudWatch Logs"]
-            lg_lambda["/aws/lambda/lambda-tests-dev-countdown"]
-            lg_api["/aws/apigateway/lambda-tests-dev-api"]
+        subgraph f1["Por función: countdown"]
+            lambda1["Lambda<br/>lambda-tests-dev-countdown"]
+            role1["Rol IAM<br/>...-countdown-role"]
+            lg1["/aws/lambda/lambda-tests-dev-countdown"]
         end
 
+        subgraph f2["Por función: birthday"]
+            lambda2["Lambda<br/>lambda-tests-dev-birthday"]
+            role2["Rol IAM<br/>...-birthday-role"]
+            lg2["/aws/lambda/lambda-tests-dev-birthday"]
+        end
+
+        subgraph fN["Por función: &lt;nombre&gt; (futuras)"]
+            lambdaN["Lambda<br/>lambda-tests-dev-&lt;nombre&gt;"]
+            roleN["Rol IAM<br/>...-&lt;nombre&gt;-role"]
+            lgN["/aws/lambda/lambda-tests-dev-&lt;nombre&gt;"]
+        end
+
+        lg_api["/aws/apigateway/lambda-tests-dev-api"]
         s3[("S3<br/>lambda-tests-tfstate-ACCOUNT_ID<br/>estado de Terraform")]
     end
 
-    client -- HTTPS --> stage --> route
-    route -- "AWS_PROXY<br/>payload 2.0" --> lambda
-    lambda -. asume .-> role
-    lambda -- console.log --> lg_lambda
+    client -- HTTPS --> stage
+    stage --> route1 -- "AWS_PROXY<br/>payload 2.0" --> lambda1
+    stage --> route2 -- "AWS_PROXY<br/>payload 2.0" --> lambda2
+    stage --> routeN -- "AWS_PROXY<br/>payload 2.0" --> lambdaN
+    lambda1 -. asume .-> role1
+    lambda2 -. asume .-> role2
+    lambdaN -. asume .-> roleN
+    lambda1 -- console.log --> lg1
+    lambda2 -- console.log --> lg2
+    lambdaN -- console.log --> lgN
     stage -- access logs --> lg_api
 ```
+
+- **Compartido por todas las funciones:** el HTTP API, su stage `$default` y el log group de access logs.
+- **Por cada función** (7 recursos): rol IAM + attachment, log group, función Lambda, integración, ruta y permiso de invocación.
 
 - **Sin VPC.** La función no accede a recursos privados, así que corre en la red gestionada por AWS. No hacen falta subredes ni NAT, y por tanto no hay coste fijo.
 - **HTTP API (v2)** en lugar de REST API (v1): es más barata, necesita menos recursos y basta para una integración proxy con Lambda.
@@ -57,8 +98,14 @@ flowchart LR
 
 ```
 Lambda-Tests/
-├── lambda/
-│   └── index.js                 # código de la función
+├── README.md                    # visión general + guía para añadir funciones
+├── lambdas/                     # una carpeta por función (nombre = clave en tfvars)
+│   ├── birthday/
+│   │   ├── index.js             # código de la función
+│   │   └── README.md            # documentación de la función
+│   └── countdown/
+│       ├── index.js
+│       └── README.md
 └── terraform/
     ├── README.md                # este documento
     ├── bootstrap/               # stack independiente (estado local): crea el bucket de estado
@@ -70,24 +117,26 @@ Lambda-Tests/
     ├── environments/
     │   └── dev/                 # stack del entorno dev (estado en S3)
     │       ├── backend.tf       # backend "s3" con use_lockfile
-    │       ├── main.tf          # compone los módulos
-    │       ├── outputs.tf       # api_url, lambda_function_name, lambda_log_group
+    │       ├── main.tf          # compone los módulos (for_each sobre var.lambdas)
+    │       ├── outputs.tf       # api_endpoint, api_urls, lambda_function_names, ...
     │       ├── providers.tf     # provider aws + default_tags
-    │       ├── terraform.tfvars # region, project, environment
-    │       ├── variables.tf
+    │       ├── terraform.tfvars # region, project, environment y mapa lambdas
+    │       ├── variables.tf     # incluye el tipo y las validaciones de lambdas
     │       └── versions.tf
     └── modules/
-        ├── iam/                 # rol de ejecución de la Lambda
-        ├── cloudwatch/          # log groups de Lambda y API
-        ├── lambda/              # empaquetado zip + función
-        └── api-gateway/         # HTTP API, integración, ruta, stage, permiso
+        ├── iam/                 # rol de ejecución (uno por función)
+        ├── cloudwatch/          # log groups de las Lambdas (uno por función) y del API
+        ├── lambda/              # empaquetado zip + función (uno por función)
+        └── api-gateway/         # HTTP API y stage compartidos + integración, ruta y permiso por función
 ```
 
 ## Convenciones comunes
 
 | Tema | Convención |
 |---|---|
+| Funciones | Clave del mapa `lambdas` = carpeta `lambdas/<clave>/` = sufijo del nombre. Solo minúsculas, números y guiones (hay validación). Cada `route_key` debe ser único. |
 | Nombres de recursos | `<project>-<environment>-<componente>`. Ejemplos: `lambda-tests-dev-countdown`, `lambda-tests-dev-countdown-role`, `lambda-tests-dev-api`. Se calculan en `locals` de [`environments/dev/main.tf`](environments/dev/main.tf). |
+| Direcciones en el estado | Los recursos por función llevan la clave: `module.lambda["countdown"]`, `module.iam["countdown"]`, `module.api_gateway.aws_apigatewayv2_route.this["countdown"]`… En la shell, ponlas entre comillas simples. |
 | Bucket de estado | `<project>-tfstate-<account_id>`. El ID de cuenta garantiza que el nombre sea único en todo S3. |
 | Log groups | `/aws/lambda/<función>` y `/aws/apigateway/<api>`. |
 | Estructura de módulo | `main.tf` (recursos), `variables.tf` (entradas), `outputs.tf` (salidas) y `README.md`. |
@@ -107,16 +156,18 @@ flowchart TD
     backend["backend.tf de dev<br/>(bucket de estado)"]
 
     subgraph dev["2. terraform/environments/dev"]
-        iam["módulo iam"]
+        tfvars[/"terraform.tfvars<br/>mapa lambdas"/]
+        iam["módulo iam[clave]<br/>(for_each)"]
         cw["módulo cloudwatch"]
-        lambda["módulo lambda"]
+        lambda["módulo lambda[clave]<br/>(for_each)"]
         api["módulo api-gateway"]
     end
 
     boot -- state_bucket_name --> backend
     backend --> dev
+    tfvars --> iam & cw & lambda & api
     iam -- role_arn --> lambda
-    cw -- lambda_log_group_name --> lambda
+    cw -- "lambda_log_group_names[clave]" --> lambda
     cw -- api_log_group_arn --> api
     lambda -- "invoke_arn<br/>function_name" --> api
 ```
@@ -125,17 +176,18 @@ flowchart TD
 
 1. `terraform/bootstrap`: se aplica **una sola vez** por cuenta y crea el bucket de estado.
 2. `terraform/environments/dev`: un solo `apply`. Terraform calcula el orden interno a partir de las referencias:
-   1. `iam` y `cloudwatch`, en paralelo.
-   2. `lambda`, que necesita el rol y el log group.
-   3. `api-gateway`, que necesita el `invoke_arn` y el nombre de la función.
+   1. `iam` (cada rol) y `cloudwatch`, en paralelo.
+   2. `lambda` (cada función), que necesita su rol y su log group.
+   3. `api-gateway`, que necesita el `invoke_arn` y el nombre de cada función.
 
 | Output (módulo origen) | Input (módulo destino) |
 |---|---|
-| `iam.role_arn` | `lambda.role_arn` |
-| `cloudwatch.lambda_log_group_name` | `lambda.log_group_name` |
+| `iam[clave].role_arn` | `lambda[clave].role_arn` |
+| `cloudwatch.lambda_log_group_names[clave]` | `lambda[clave].log_group_name` |
 | `cloudwatch.api_log_group_arn` | `api_gateway.log_group_arn` |
-| `lambda.invoke_arn` | `api_gateway.lambda_invoke_arn` |
-| `lambda.function_name` | `api_gateway.lambda_function_name` |
+| `lambda[clave].invoke_arn` | `api_gateway.routes[clave].lambda_invoke_arn` |
+| `lambda[clave].function_name` | `api_gateway.routes[clave].lambda_function_name` |
+| `var.lambdas[clave].route_key` | `api_gateway.routes[clave].route_key` |
 | `bootstrap.state_bucket_name` | `bucket` en `environments/dev/backend.tf` (se copia a mano) |
 
 La dependencia `lambda → log group` es **implícita**: el módulo lambda usa el nombre del log group en `logging_config`, así que Terraform crea el log group primero. Si no fuese así, Lambda crearía el log group por su cuenta al primer `console.log`, sin retención, y el siguiente `apply` fallaría con un conflicto.
@@ -155,11 +207,12 @@ terraform fmt -recursive -check -diff
 (cd environments/dev && terraform init -backend=false -input=false && terraform validate)
 ```
 
-**Ejecutar la función en local** (requiere Node.js, ver [requisitos](#1-requisitos-en-ubuntu-wsl)):
+**Ejecutar una función en local** (requiere Node.js, ver [requisitos](#1-requisitos-en-ubuntu-wsl)):
 
 ```bash
 cd ~/Lambda-Tests
-node -e 'require("./lambda/index.js").handler({}).then(r => console.log(JSON.stringify(r, null, 2)))'
+node -e 'require("./lambdas/countdown/index.js").handler({}).then(r => console.log(JSON.stringify(r, null, 2)))'
+node -e 'require("./lambdas/birthday/index.js").handler({}).then(r => console.log(JSON.stringify(r, null, 2)))'
 ```
 
 **Ver el plan** (solo lectura, pero necesita credenciales AWS y, en `dev`, que el bucket de estado ya exista):
@@ -167,6 +220,17 @@ node -e 'require("./lambda/index.js").handler({}).then(r => console.log(JSON.str
 ```bash
 cd ~/Lambda-Tests/terraform/bootstrap && terraform init && terraform plan
 cd ~/Lambda-Tests/terraform/environments/dev && terraform init && terraform plan
+```
+
+**Ver el plan de dev sin haber creado aún el bucket de estado.** Un archivo `*_override.tf` (ignorado por git) cambia el backend a local solo para esta prueba. **No ejecutes `apply` así**, o el estado quedaría en local:
+
+```bash
+cd ~/Lambda-Tests/terraform/environments/dev
+printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
+terraform init -reconfigure && terraform plan
+# Esperado con countdown y birthday: "Plan: 17 to add, 0 to change, 0 to destroy."
+# (3 compartidos: API, stage y log group del API + 7 por función)
+rm -rf backend_override.tf .terraform terraform.tfstate* build   # deshacer la prueba
 ```
 
 **Análisis estático opcional** (no viene instalado):
@@ -254,18 +318,42 @@ terraform apply tfplan
 ### 6. Verificar
 
 ```bash
-curl -s "$(terraform output -raw api_url)"; echo
+terraform output api_urls
+# api_urls = {
+#   "birthday"  = "https://<id>.execute-api.eu-west-1.amazonaws.com/birthday"
+#   "countdown" = "https://<id>.execute-api.eu-west-1.amazonaws.com/countdown"
+# }
+
+curl -s "$(terraform output -raw api_endpoint)/countdown"; echo
 # {"target_year":2027,"time_remaining":{...},"message":"Faltan ... para Año Nuevo 🎉"}
 
-aws logs tail "$(terraform output -raw lambda_log_group)" --since 10m
-aws logs tail /aws/apigateway/lambda-tests-dev-api --since 10m
+curl -s "$(terraform output -raw api_endpoint)/birthday"; echo
+# {"target_date":"2027-01-05","is_today":false,"time_remaining":{...},"message":"Faltan ... para el 5 de enero 🎂"}
+
+aws logs tail /aws/lambda/lambda-tests-dev-countdown --since 10m
+aws logs tail /aws/lambda/lambda-tests-dev-birthday --since 10m
+aws logs tail "$(terraform output -raw api_log_group)" --since 10m
 
 terraform plan   # debe decir "No changes"
 ```
 
+| Output | Contenido |
+|---|---|
+| `api_endpoint` | URL base del API compartido |
+| `api_urls` | Mapa función => URL completa |
+| `lambda_function_names` | Mapa función => nombre en AWS |
+| `lambda_log_groups` | Mapa función => log group |
+| `api_log_group` | Log group de los access logs |
+
 ### 7. Actualizar el código
 
-Edita `lambda/index.js` y vuelve a ejecutar `terraform apply` en `environments/dev`. El zip se regenera y, al cambiar `source_code_hash`, Terraform sube la nueva versión. No hace falta ningún paso manual.
+Edita `lambdas/<nombre>/index.js` y vuelve a ejecutar `terraform apply` en `environments/dev`. El zip de esa función se regenera y, al cambiar su `source_code_hash`, Terraform sube solo la nueva versión de esa función. No hace falta ningún paso manual.
+
+### 8. Añadir, cambiar o quitar funciones
+
+- **Añadir:** crea `lambdas/<nombre>/` y añade la entrada al mapa `lambdas` de `terraform.tfvars`. Guía completa con la función de ejemplo `lambda-example`: [Cómo añadir una nueva función Lambda](../README.md#cómo-añadir-una-nueva-función-lambda).
+- **Cambiar ruta, memoria, timeout o variables de entorno:** edita su entrada en `terraform.tfvars` y `apply`.
+- **Quitar:** borra su entrada del mapa y ejecuta `apply` (destruye sus 7 recursos, incluidos sus logs). Después ya puedes borrar la carpeta.
 
 ## Cómo destruir todo
 
@@ -319,7 +407,8 @@ No hay costes fijos: sin VPC, sin NAT Gateway y sin instancias. Si no hay tráfi
 **Lo que ya está implementado:**
 
 - **Mínimo privilegio:** el rol de la Lambda solo tiene `AWSLambdaBasicExecutionRole`, es decir, permiso para escribir sus logs.
-- **Permiso de invocación acotado:** `aws_lambda_permission` solo deja invocar la función al API de este stack (`source_arn = <execution_arn>/*/*`).
+- **Un rol por función:** los permisos extra que necesite una función no los hereda ninguna otra.
+- **Permiso de invocación acotado:** `aws_lambda_permission` solo deja invocar cada función al API de este stack (`source_arn = <execution_arn>/*/*`).
 - **Bucket de estado:** cifrado SSE-S3, versionado (permite recuperar estados anteriores) y bloqueo total de acceso público.
 - **Throttling** en el stage (100 peticiones/s y ráfaga de 50), que limita abusos y el coste.
 - **Access logs** del API en CloudWatch, para auditar las peticiones.
@@ -345,7 +434,8 @@ No hay costes fijos: sin VPC, sin NAT Gateway y sin instancias. Si no hay tráfi
 - Solo existe el entorno **dev**. Para `prod` basta copiar `environments/dev` y cambiar `environment` y `key`.
 - No hay **dominio propio** (ACM + Route 53 + `aws_apigatewayv2_domain_name`).
 - No hay **alarmas** (errores, throttles, latencia) ni trazas **X-Ray**.
-- No hay **tests automatizados** de la función ni de la infraestructura (`terraform test`).
+- No hay **tests automatizados** de las funciones ni de la infraestructura (`terraform test`).
+- El **throttling** es común a todas las rutas del API. Si una función necesita límites propios, usa `route_settings` en el stage.
 
 ## Problemas frecuentes
 
@@ -353,16 +443,18 @@ No hay costes fijos: sin VPC, sin NAT Gateway y sin instancias. Si no hay tráfi
 |---|---|---|
 | `terraform init` en dev falla con `NoSuchBucket` o un nombre de bucket inválido | `backend.tf` aún tiene `<ACCOUNT_ID>`, o no se ha aplicado bootstrap | Sigue los pasos [3](#3-crear-el-bucket-de-estado-una-sola-vez) y [4](#4-configurar-el-backend-de-dev). Después, `terraform init -reconfigure`. |
 | `BucketAlreadyExists` en bootstrap | Ese nombre ya existe en otra cuenta | Cambia `project` en `bootstrap/variables.tf`. |
-| `ResourceAlreadyExistsException` al crear un log group | La Lambda se ejecutó antes de que Terraform creara su log group (despliegue manual previo o `destroy` interrumpido) | `terraform import module.cloudwatch.aws_cloudwatch_log_group.lambda /aws/lambda/lambda-tests-dev-countdown`, o bórralo con `aws logs delete-log-group`. |
-| `{"message":"Not Found"}` | Ruta o método incorrectos | Usa `GET` sobre `<api_url>` (que ya incluye `/countdown`). |
-| `{"message":"Internal Server Error"}` | La función lanzó un error o falta el permiso de invocación | Revisa `aws logs tail /aws/lambda/lambda-tests-dev-countdown` y los access logs (`integrationErr`). Si es el permiso, `terraform apply`. |
+| `ResourceAlreadyExistsException` al crear un log group | La Lambda se ejecutó antes de que Terraform creara su log group (despliegue manual previo o `destroy` interrumpido) | `terraform import 'module.cloudwatch.aws_cloudwatch_log_group.lambda["countdown"]' /aws/lambda/lambda-tests-dev-countdown`, o bórralo con `aws logs delete-log-group`. |
+| `could not archive missing directory` | Hay una clave en `lambdas` sin carpeta `lambdas/<clave>/` | Crea la carpeta o corrige la clave en `terraform.tfvars`. |
+| `Cada función debe tener un route_key distinto` / `Las claves de 'lambdas' solo pueden tener...` | Validaciones de la variable `lambdas` | Corrige la entrada en `terraform.tfvars`. |
+| `{"message":"Not Found"}` | Ruta o método incorrectos | Comprueba `terraform output api_urls` y el método del `route_key`. |
+| `{"message":"Internal Server Error"}` | La función lanzó un error o falta el permiso de invocación | Revisa `aws logs tail /aws/lambda/lambda-tests-dev-<nombre>` y los access logs (`integrationErr`). Si es el permiso, `terraform apply`. |
 | `ExpiredToken`, `AccessDenied` o `no valid credential sources` | La sesión SSO caducó, el perfil es incorrecto o faltan permisos | `aws sso login --profile <perfil>`, revisa `AWS_PROFILE` y `aws sts get-caller-identity`. |
 | `SignatureDoesNotMatch` o `RequestTimeTooSkewed` | El reloj de WSL se ha desfasado (pasa al suspender el equipo) | `sudo hwclock -s` o `wsl --shutdown` y vuelve a abrir Ubuntu. |
 | `Error acquiring the state lock` | Una ejecución anterior se interrumpió y dejó el `.tflock` | Comprueba que nadie más está aplicando y ejecuta `terraform force-unlock <LOCK_ID>`. |
 | Terraform muy lento, errores de permisos o `\r` en scripts | Se ejecuta desde PowerShell/CMD o sobre la ruta `\\wsl.localhost\...` | Trabaja siempre en la consola Ubuntu, en `~/Lambda-Tests`. |
 | Las credenciales de Windows no funcionan | WSL no lee `C:\Users\<usuario>\.aws` | Configúralas en Ubuntu con `aws configure` (o enlaza `~/.aws` a la carpeta de Windows, bajo tu responsabilidad). |
 | `BucketNotEmpty` al destruir bootstrap | Bucket versionado con `force_destroy = false` | Usa `-var force_destroy=true` (ver [Cómo destruir todo](#cómo-destruir-todo)). |
-| Al cambiar el código no se actualiza la función | Has editado otro directorio o no se ha aplicado | El zip sale de `~/Lambda-Tests/lambda`. Ejecuta `terraform apply` en `environments/dev`. |
+| Al cambiar el código no se actualiza la función | Has editado otro directorio o no se ha aplicado | El zip sale de `~/Lambda-Tests/lambdas/<nombre>/`. Ejecuta `terraform apply` en `environments/dev`. |
 
 ## Documentación de los módulos
 
@@ -370,7 +462,9 @@ El stack que crea el bucket de estado está documentado en [bootstrap/README.md]
 
 | Módulo | Descripción |
 |---|---|
-| [iam](modules/iam/README.md) | Rol de ejecución de la Lambda |
-| [cloudwatch](modules/cloudwatch/README.md) | Log groups de la Lambda y del API |
-| [lambda](modules/lambda/README.md) | Empaquetado y función Lambda |
-| [api-gateway](modules/api-gateway/README.md) | HTTP API, ruta, stage y permiso de invocación |
+| [iam](modules/iam/README.md) | Rol de ejecución (uno por función) |
+| [cloudwatch](modules/cloudwatch/README.md) | Log groups de las Lambdas y del API |
+| [lambda](modules/lambda/README.md) | Empaquetado y función Lambda (uno por función) |
+| [api-gateway](modules/api-gateway/README.md) | HTTP API y stage compartidos; integración, ruta y permiso por función |
+
+Cada función tiene además su propio README en `lambdas/<nombre>/README.md` : [countdown](../lambdas/countdown/README.md) y [birthday](../lambdas/birthday/README.md).
